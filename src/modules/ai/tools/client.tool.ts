@@ -51,7 +51,7 @@ export const getClientsDeclaration = {
         type: 'number',
         description:
           "Nechta mijoz qaytarilsin. Foydalanuvchi son aytsa shuni ber (masalan, 5 ta). " +
-  "Aytmasa bermang, mos kelganlarning hammasi qaytadi (ko'pi bilan 300).",
+          "Aytmasa bermang, mos kelganlarning hammasi qaytadi (ko'pi bilan 300).",
       },
     },
   },
@@ -147,19 +147,18 @@ export async function runGetClients(args: GetClientsArgs, config: ConfigService)
   const owing = matched.filter((c) => c.debt > 0);
   const owed = matched.filter((c) => c.debt < 0);
   const fmt = (n: number) => n.toLocaleString('ru-RU');
-const esc = (s: string) => s.replace(/\|/g, '\\|');
+  const esc = (s: string) => s.replace(/\|/g, '\\|');
 
-const table =
-  '| № | Mijoz | Telefon | Qarz | Oxirgi xarid |\n' +
-  '|---|-------|---------|------|--------------|\n' +
-  shown
-    .map(
-      (c, i) =>
-        `| ${i + 1} | ${esc(c.fullname)} | ${c.phone ?? '-'} | ${fmt(c.debt)} | ${
-          c.lastSellingDate ? String(c.lastSellingDate).slice(0, 10) : '-'
-        } |`,
-    )
-    .join('\n');
+  const table =
+    '| № | Mijoz | Telefon | Qarz | Oxirgi xarid |\n' +
+    '|---|-------|---------|------|--------------|\n' +
+    shown
+      .map(
+        (c, i) =>
+          `| ${i + 1} | ${esc(c.fullname)} | ${c.phone ?? '-'} | ${fmt(c.debt)} | ${c.lastSellingDate ? String(c.lastSellingDate).slice(0, 10) : '-'
+          } |`,
+      )
+      .join('\n');
 
   return {
     totalCount: total, // qidiruvga mos jami mijozlar soni

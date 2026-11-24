@@ -165,6 +165,23 @@ export async function runGetProducts(args: GetProductsArgs, config: ConfigServic
   const defaultLimit = sorting && !filtering ? 10 : MAX_SHOWN;
   const limit = Math.min(Math.max(args.limit ?? defaultLimit, 1), MAX_SHOWN);
   const shown = matched.slice(0, limit);
+  const fmt = (n: number | null | undefined) =>
+    n == null || Number.isNaN(Number(n))
+      ? '-'
+      : Number(n).toLocaleString('ru-RU');
+
+  const esc = (s: string) =>
+    s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+
+  const table =
+    '| № | Mahsulot | Qoldiq | Minimal qoldiq | Sotuv narxi | Tannarx | Jami sotuv qiymati |\n' +
+    '|---|----------|--------|---------------|-------------|---------|--------------------|\n' +
+    shown
+      .map(
+        (p, i) =>
+          `| ${i + 1} | ${esc(p.name)} | ${fmt(p.count)} | ${fmt(p.minAmount)} | ${fmt(p.price)} | ${fmt(p.cost)} | ${fmt(p.totalPrice)} |`,
+      )
+      .join('\n');
 
   return {
     totalCount: total, // qidiruvga mos jami mahsulotlar soni
@@ -173,6 +190,7 @@ export async function runGetProducts(args: GetProductsArgs, config: ConfigServic
     matched: matched.length, // filtrga mos kelganlar soni
     shown: shown.length,
     truncated: matched.length > shown.length,
+    table,
     products: shown,
   };
 }
