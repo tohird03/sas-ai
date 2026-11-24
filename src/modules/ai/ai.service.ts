@@ -16,21 +16,20 @@ export type StreamEvent =
   | { type: 'status'; text: string }
   | { type: 'done' };
 
-  const SYSTEM_PROMPT = `Sen ORDIX ERP tizimining yordamchisisan.
-  Foydalanuvchiga o'zbek tilida, qisqa va aniq javob ber.
-  Mahsulot, ombor, qoldiq, narx, mijoz va qarz haqidagi savollarga faqat funksiyalardan olingan ma'lumot bilan javob ber, o'zingdan to'qima.
-  Funksiya hech narsa topmasa, buni ochiq ayt.
-  Mahsulotlar uchun get_products, mijozlar uchun get_clients ishlat.
-  Mahsulot maydonlari: count - ombordagi qoldiq (manfiy bo'lishi mumkin), price - 1 dona sotuv narxi, cost - 1 dona tannarx, totalPrice - qoldiqning umumiy sotuv qiymati.
-  Mijoz maydonlari: debt - qarz miqdori, lastSellingDate - oxirgi xarid sanasi (null bo'lsa hali xarid qilmagan).
-  Ma'lumotda valyuta ko'rsatilmagan, shuning uchun summa yoniga o'zingdan valyuta yozma.
-  Qoldiq bo'yicha so'ralsa maxCount/minCount, qarz bo'yicha so'ralsa debtType/debtValue filtrini ishlat. Hamma mosini so'rashsa limit berma.
-  Funksiya qaytargan hamma elementni ber, birortasini tashlab ketma, o'zingdan "faqat N tasi tekshirildi" deb to'qima.
-  Natijada table maydoni bo'lsa, uni o'zgartirmasdan, aynan shu holda markdown jadval qilib chiqar. Ro'yxat (1., 2., -) ko'rinishida yozma.
-  Javob boshida nechta mos element topilganini ayt (mahsulotlarda matched, mijozlarda totalCount).
-  truncated true bo'lsa, faqat shown tasi ko'rsatilayotganini ayt. complete false bo'lsa, jami totalCount tadan faqat scanned tasi tekshirilganini ayt.
-  Jami qarz so'ralsa debtSum dan foydalan, lekin complete false bo'lsa uning to'liq emasligini ayt.
-  Reyting savollarida (eng qimmat, eng ko'p qarzdor) sortBy va limit ishlat va truncated haqida gapirma.`;
+const SYSTEM_PROMPT = `Sen ORDIX ERP tizimining yordamchisisan.
+Foydalanuvchiga o'zbek tilida, qisqa va aniq javob ber.
+Mahsulot, ombor, qoldiq, narx, mijoz va qarz haqidagi savollarga faqat funksiyalardan olingan ma'lumot bilan javob ber, o'zingdan to'qima.
+Funksiya hech narsa topmasa, buni ochiq ayt.
+Mahsulotlar uchun get_products, mijozlar uchun get_clients ishlat.
+Savoldagi shartlarni o'zing funksiyaning filters parametriga aylantir. Hamma mosini so'rashsa limit berma.
+Mahsulot maydonlari: count - ombordagi qoldiq (manfiy bo'lishi mumkin), price - 1 dona sotuv narxi, cost - 1 dona tannarx, totalPrice - qoldiqning umumiy sotuv qiymati.
+Mijoz maydonlari: debt - qarz miqdori, lastSellingDate - oxirgi xarid sanasi (null bo'lsa hali xarid qilmagan).
+Ma'lumotda valyuta ko'rsatilmagan, shuning uchun summa yoniga o'zingdan valyuta yozma.
+Funksiya natijasidagi ro'yxat foydalanuvchiga tizim tomonidan alohida, to'liq jadval qilib ko'rsatiladi. Sen jadval yoki ro'yxat yozma, birorta qatorni takrorlama, faqat qisqa xulosa ber.
+Xulosada nechta mos element topilganini ayt (matched). Ichki maydon nomlarini (totalCount, scanned, matched, truncated, complete, shown) yozma, oddiy o'zbekcha gapir.
+truncated true bo'lsa: "N tadan faqat M tasi ko'rsatilmoqda" de. complete false bo'lsa: "N tadan faqat M tasi tekshirildi" de. Aks holda bu haqda hech narsa yozma. Buning sababini o'zing taxmin qilma.
+Jami qarz so'ralsa: clientsOweUs (mijozlar bizga qarzi, clientsOweUsCount ta qarzdor) va weOweClients (biz mijozlarga qarzimiz, weOweClientsCount ta) maydonlarini alohida ayt. Summalarni o'zing qo'shma, ayirma va birlashtirma, tayyor maydonlardan ol.
+Reyting savollarida (eng qimmat, eng ko'p qarzdor) sortBy, sortOrder va limit ishlat va truncated haqida gapirma.`;
 
 const RETRY_STATUSES = [429, 500, 503];
 const MAX_ATTEMPTS = 2;
@@ -38,6 +37,8 @@ const MAX_STEPS = 5;
 const CONNECT_TIMEOUT_MS = 20000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tashkent' });
 
 @Injectable()
 export class AiService {
@@ -60,7 +61,9 @@ export class AiService {
         },
         signal: ctrl.signal,
         body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          systemInstruction: {
+            parts: [{ text: `${SYSTEM_PROMPT}\nBugungi sana: ${today()}` }],
+          },
           contents,
           tools: [{ functionDeclarations: toolDeclarations }],
           generationConfig: {
@@ -158,32 +161,57 @@ export class AiService {
 
     let gotText = false;
 
+    // Funksiyalar qaytargan jadvallar: modelga berilmaydi, foydalanuvchiga to'g'ridan-to'g'ri yuboriladi.
+    // Shunda jadval model orqali o'tmaydi: uzilmaydi, raqamlari buzilmaydi.
+    const tables: string[] = [];
+    const tablesText = () => tables.map((t) => `\n\n${t}\n\n`).join('');
+
     for (let step = 0; step < MAX_STEPS; step++) {
       const res = await this.open(contents, clientSignal);
 
       // Modelning barcha qismlarini o'zgarmagan holda yig'amiz (thought signature saqlanishi shart)
       const modelParts: any[] = [];
       const calls: any[] = [];
+      let finishReason: string | undefined;
 
-      for await (const chunk of this.readChunks(res)) {
-        const parts: any[] = chunk.candidates?.[0]?.content?.parts ?? [];
-        for (const part of parts) {
-          modelParts.push(part);
+      try {
+        for await (const chunk of this.readChunks(res)) {
+          const candidate = chunk.candidates?.[0];
+          if (candidate?.finishReason) finishReason = candidate.finishReason;
 
-          if (part.functionCall) {
-            calls.push(part);
-          } else if (typeof part.text === 'string' && part.text && !part.thought) {
-            gotText = true;
-            yield { type: 'text', text: part.text };
+          const parts: any[] = candidate?.content?.parts ?? [];
+          for (const part of parts) {
+            modelParts.push(part);
+
+            if (part.functionCall) {
+              calls.push(part);
+            } else if (typeof part.text === 'string' && part.text && !part.thought) {
+              gotText = true;
+              yield { type: 'text', text: part.text };
+            }
           }
         }
+      } catch (e: any) {
+        if (clientSignal?.aborted) throw e;
+        console.warn(`[AI] oqim uzildi: ${e?.message}`);
+        yield { type: 'text', text: "\n\n⚠️ Aloqa uzildi, javob to'liq emas. Qayta urinib ko'ring." };
+        if (tables.length) yield { type: 'text', text: tablesText() };
+        yield { type: 'done' };
+        return;
+      }
+
+      // Javob nega tugaganini logga yozamiz (uzilish sababini topish uchun)
+      if (finishReason && finishReason !== 'STOP') {
+        console.warn(`[AI] finishReason: ${finishReason}`);
+        yield { type: 'text', text: `\n\n⚠️ Javob to'liq emas (${finishReason}).` };
       }
 
       // Funksiya chaqirilmagan bo'lsa, javob tugadi
       if (calls.length === 0) {
-        if (!gotText) {
+        if (!gotText && tables.length === 0) {
           yield { type: 'text', text: 'Javob olinmadi, qayta urinib ko‘ring.' };
         }
+        if (tables.length) yield { type: 'text', text: tablesText() };
         yield { type: 'done' };
         return;
       }
@@ -198,7 +226,23 @@ export class AiService {
 
         let response: Record<string, unknown>;
         try {
-          response = { result: await executeTool(name, args, this.config) };
+          let result: any = await executeTool(name, args, this.config);
+
+          if (result && typeof result.table === 'string' && result.table) {
+            tables.push(result.table);
+
+            // Modelga jadval va ro'yxat berilmaydi, faqat yig'indilar va sonlar
+            const rest = { ...result };
+            delete rest.table;
+            delete rest.clients;
+            delete rest.products;
+            result = {
+              ...rest,
+              note: "Jadval foydalanuvchiga tizim tomonidan alohida ko'rsatiladi. Jadval yoki ro'yxat yozma, faqat qisqa xulosa ber.",
+            };
+          }
+
+          response = { result };
         } catch (e: any) {
           console.warn(`[AI] funksiya xatosi: ${e?.message}`);
           response = { error: e?.message ?? 'Funksiya xatosi' };
@@ -212,6 +256,7 @@ export class AiService {
       contents.push({ role: 'user', parts: responseParts });
     }
 
+    if (tables.length) yield { type: 'text', text: tablesText() };
     yield {
       type: 'text',
       text: "Kechirasiz, so'rovni bajarib bo'lmadi. Savolni boshqacha yozib ko'ring.",
